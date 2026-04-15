@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoCap Studio — Motion Capture Web</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <!--
+    TensorFlow.js + MoveNet (SinglePose Lightning = rapide, Thunder = précis)
+    On charge la version "tfjs" puis le modèle "pose-detection" séparément.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════
+       HEADER
+  ═══════════════════════════════════════════════════ -->
+  <header class="app-header">
+    <div class="logo">
+      <span class="logo-icon">◈</span>
+      <span class="logo-text">MoCap<em>Studio</em></span>
+    </div>
+    <div class="header-meta">
+      <span class="badge" id="modelBadge">MoveNet Lightning</span>
+      <span class="badge badge-fps" id="fpsBadge">0 FPS</span>
+      <span class="badge badge-status" id="statusBadge">En attente</span>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════
+       LAYOUT PRINCIPAL
+  ═══════════════════════════════════════════════════ -->
+  <main class="app-layout">
+
+    <!-- ── PANNEAU GAUCHE : Contrôles ── -->
+    <aside class="panel panel-controls">
+      <h2 class="panel-title">Contrôles</h2>
+
+      <!-- Boutons caméra / enregistrement -->
+      <div class="control-group">
+        <button class="btn btn-primary" id="btnStart">
+          <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
+          Démarrer caméra
+        </button>
+        <button class="btn btn-danger" id="btnStop" disabled>
+          <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          Arrêter caméra
+        </button>
+      </div>
+
+      <div class="control-group">
+        <button class="btn btn-record" id="btnRecord" disabled>
+          <span class="rec-dot"></span>
+          Enregistrer
+        </button>
+        <button class="btn btn-outline" id="btnExport" disabled>
+          <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          Exporter JSON
+        </button>
+      </div>
+
+      <!-- Sélecteur de modèle -->
+      <div class="setting-row">
+        <label for="modelSelect">Modèle</label>
+        <select id="modelSelect" class="select-input">
+          <option value="lightning">Lightning (rapide)</option>
+          <option value="thunder">Thunder (précis)</option>
+        </select>
+      </div>
+
+      <!-- Seuil de confiance -->
+      <div class="setting-row">
+        <label for="confidenceRange">Confiance min.</label>
+        <div class="range-wrapper">
+          <input type="range" id="confidenceRange" min="0" max="1" step="0.05" value="0.35" />
+          <span id="confidenceValue">0.35</span>
+        </div>
+      </div>
+
+      <!-- Toggles visuels -->
+      <div class="toggles">
+        <label class="toggle-item">
+          <input type="checkbox" id="togKeypoints" checked />
+          <span class="toggle-switch"></span>
+          Points clés
+        </label>
+        <label class="toggle-item">
+          <input type="checkbox" id="togSkeleton" checked />
+          <span class="toggle-switch"></span>
+          Squelette
+        </label>
+        <label class="toggle-item">
+          <input type="checkbox" id="togLabels" checked />
+          <span class="toggle-switch"></span>
+          Étiquettes
+        </label>
+        <label class="toggle-item">
+          <input type="checkbox" id="togGestures" checked />
+          <span class="toggle-switch"></span>
+          Détection gestes
+        </label>
+        <label class="toggle-item">
+          <input type="checkbox" id="togMirror" checked />
+          <span class="toggle-switch"></span>
+          Mode miroir
+        </label>
+      </div>
+
+      <!-- Stats enregistrement -->
+      <div class="rec-stats" id="recStats" style="display:none">
+        <div class="rec-indicator"><span class="rec-dot pulsing"></span> REC</div>
+        <div class="rec-info">
+          <span id="recFrames">0</span> frames
+          <span id="recDuration">0.0 s</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ── CENTRE : Vidéo + Canvas ── -->
+    <section class="panel panel-video">
+      <!-- Zone de rendu (vidéo + overlay canvas superposés) -->
+      <div class="video-wrapper" id="videoWrapper">
+        <!-- Message d'accueil quand la caméra n'est pas active -->
+        <div class="video-placeholder" id="videoPlaceholder">
+          <div class="placeholder-icon">◈</div>
+          <p>Cliquez sur <strong>Démarrer caméra</strong><br/>pour activer la motion capture</p>
+        </div>
+        <!-- L'élément vidéo (flux webcam) -->
+        <video id="video" playsinline autoplay muted></video>
+        <!-- Le canvas superposé pour dessiner le squelette -->
+        <canvas id="canvas"></canvas>
+        <!-- Overlay des gestes détectés -->
+        <div class="gesture-overlay" id="gestureOverlay"></div>
+      </div>
+
+      <!-- Barre d'info sous la vidéo -->
+      <div class="video-footer">
+        <span id="videoRes">—</span>
+        <span id="inferenceTime">Inférence : —</span>
+        <span id="poseCount">0 pose(s) détectée(s)</span>
+      </div>
+    </section>
+
+    <!-- ── PANNEAU DROIT : Données keypoints ── -->
+    <aside class="panel panel-data">
+      <h2 class="panel-title">Keypoints <span id="keypointCount">(0)</span></h2>
+      <div class="keypoint-list" id="keypointList">
+        <p class="no-data">Aucune donnée — démarrez la caméra.</p>
+      </div>
+
+      <h2 class="panel-title" style="margin-top:1.5rem">Gestes détectés</h2>
+      <div class="gesture-log" id="gestureLog">
+        <p class="no-data">Aucun geste détecté.</p>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════
+       FOOTER
+  ═══════════════════════════════════════════════════ -->
+  <footer class="app-footer">
+    <span>MoCap Studio — TensorFlow.js + MoveNet</span>
+    <span id="recordingSize"></span>
+  </footer>
+
+  <!-- Script principal -->
+  <script src="script.js"></script>
+</body>
+</html>
